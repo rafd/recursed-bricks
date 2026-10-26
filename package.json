@@ -2,10 +2,15 @@
   "name": "brickbreaker",
   "private": true,
   "devDependencies": {
+    "rcade": "^0.0.50",
     "shadow-cljs": "2.28.20"
   },
   "dependencies": {
     "react": "18.3.1",
     "react-dom": "18.3.1"
+  },
+  "scripts": {
+    "build": "bb build-rcade",
+    "rcade-dev": "rcade dev http://localhost:8080"
   }
 }

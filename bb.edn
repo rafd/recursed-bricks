@@ -1,3 +1,5 @@
 {:paths ["scripts"]
  :tasks {export {:doc "Export game as single HTML file"
-                 :task (exec 'export/-main)}}}
+                 :task (exec 'export/-main)}
+         build-rcade {:doc "Build game into dist/ for RCade"
+                      :task (exec 'export/-main-rcade)}}}

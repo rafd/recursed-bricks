@@ -7,7 +7,8 @@
     [reagent.dom.client :as rdc]
     [brickbreaker.constants :as constants]
     [brickbreaker.game :as game]
-    [brickbreaker.physics :as physics]))
+    [brickbreaker.physics :as physics]
+    [brickbreaker.rcade :as rcade]))
 
 (def world-height 100)
 
@@ -144,8 +145,16 @@
     [:mode/two-player :player/one] wasd->direction
     [:mode/two-player :player/two] arrow-and-ijkl->direction))
 
+(defn rcade-player-numbers [mode player-id]
+  (case [mode player-id]
+    [:mode/one-player :player/one] [1 2]
+    [:mode/two-player :player/one] [1]
+    [:mode/two-player :player/two] [2]))
+
 (defn current-action [mode player-id]
-  (into #{} (keep (player-key-map mode player-id)) @held-keys))
+  (into (into #{} (keep (player-key-map mode player-id)) @held-keys)
+        (mapcat rcade/held-actions)
+        (rcade-player-numbers mode player-id)))
 
 (defn brick-color [row]
   (str "hsl(" (* row 36) ", 70%, 55%)"))
@@ -316,14 +325,14 @@
     :slider/min 0
     :slider/max 1
     :slider/step 0.01
-    :slider/curse-step 0.1
+    :slider/curse-step 0.25
     :slider/gravity-mode :gravity/radial}
    {:slider/key :tuning/gravity-center-y
     :slider/label "Gravity center y (fraction of height)"
     :slider/min 0
     :slider/max 1
     :slider/step 0.01
-    :slider/curse-step 0.1
+    :slider/curse-step 0.25
     :slider/gravity-mode :gravity/radial}
    {:slider/key :tuning/ball-drag
     :slider/label "Ball drag"
@@ -371,9 +380,10 @@
     :slider/step 0.5}
    {:slider/key :constant/ball-radius
     :slider/label "Ball radius"
-    :slider/min 0.75
-    :slider/max 3
-    :slider/step 0.25}
+    :slider/min 0.5
+    :slider/max 5
+    :slider/step 0.1
+    :slider/curse-step 0.5}
    {:slider/key :constant/brick-columns
     :slider/label "Brick columns"
     :slider/min 1
@@ -452,6 +462,16 @@
     :match/key "4"
     :match/mode :mode/two-player
     :match/cursed? true}])
+
+(defonce menu-index
+  (r/atom 0))
+
+(defn move-menu-cursor! [offset]
+  (swap! menu-index (fn [index]
+                      (mod (+ index offset) (count match-options)))))
+
+(defn selected-match-option []
+  (nth match-options @menu-index))
 
 (defn start-match! [{:match/keys [mode cursed?]}]
   (let [seed (rand-int 1000000)
@@ -578,23 +598,39 @@
       (switch-gravity-mode! player-id)
       (mutate-slider! player-id curse))))
 
+(def toast-style
+  (if rcade/in-cabinet?
+    {:toast/bottom 3
+     :toast/gap 2
+     :toast/font-size 7
+     :toast/padding "1px 3px"
+     :toast/border-radius 3}
+    {:toast/bottom 8
+     :toast/gap 4
+     :toast/font-size 10
+     :toast/padding "3px 6px"
+     :toast/border-radius 6}))
+
 (defn toasts-view [player-id]
-  [:div {:style {:position "absolute"
-                 :bottom 16
-                 :left "50%"
-                 :transform "translateX(-50%)"
-                 :display "flex"
-                 :flex-direction "column"
-                 :gap 6
-                 :align-items "center"
-                 :pointer-events "none"}}
-   (for [{:toast/keys [id text player]} @toasts
-         :when (= player-id player)]
-     ^{:key id}
-     [:div {:style {:padding "6px 12px"
-                    :background "rgba(0, 0, 0, 0.75)"
-                    :border-radius 6}}
-      text])])
+  (let [{:toast/keys [bottom gap font-size padding border-radius]} toast-style]
+    [:div {:style {:position "absolute"
+                   :bottom bottom
+                   :left "50%"
+                   :transform "translateX(-50%)"
+                   :display "flex"
+                   :flex-direction "column"
+                   :gap gap
+                   :font-size font-size
+                   :white-space "nowrap"
+                   :align-items "center"
+                   :pointer-events "none"}}
+     (for [{:toast/keys [id text player]} @toasts
+           :when (= player-id player)]
+       ^{:key id}
+       [:div {:style {:padding padding
+                      :background "rgba(0, 0, 0, 0.75)"
+                      :border-radius border-radius}}
+        text])]))
 
 (defn tuning-slider [{:slider/keys [key label min max step needs-restart?]}]
   (let [value (get-in (player-state :player/one) (slider-path key))]
@@ -656,11 +692,16 @@
   [:button {:on-click (fn [event]
                         (.blur (.-currentTarget event))
                         (new-game!))}
-   "Replay (R)"])
+   (if rcade/in-cabinet?
+     "Replay (A)"
+     "Replay (R)")])
 
-(defn menu-button [{:keys [label on-click]}]
-  [:button {:style {:font-size 18
-                    :padding "8px 16px"}
+(defn menu-button [{:keys [label selected? on-click]}]
+  [:button {:style {:font-size 12
+                    :padding "4px 10px"
+                    :border (if selected?
+                              "2px solid #fc0"
+                              "2px solid transparent")}
             :on-click (fn [event]
                         (.blur (.-currentTarget event))
                         (on-click))}
@@ -670,7 +711,9 @@
   [:button {:on-click (fn [event]
                         (.blur (.-currentTarget event))
                         (show-menu!))}
-   "Menu (M)"])
+   (if rcade/in-cabinet?
+     "Menu (B)"
+     "Menu (M)")])
 
 (def ticks-per-second 60)
 
@@ -681,9 +724,9 @@
    :transform "translate(-50%, -50%)"
    :display "flex"
    :flex-direction "column"
-   :gap 12
+   :gap 8
    :align-items "center"
-   :padding 16
+   :padding 12
    :background "rgba(0, 0, 0, 0.75)"
    :border-radius 6})
 
@@ -706,7 +749,7 @@
   (let [game-tick (get-in app [:app/players :player/one :state/game-tick])]
     [:div {:style overlay-style}
      (when-let [text (result-text app)]
-       [:div {:style {:font-size 28}} text])
+       [:div {:style {:font-size 18}} text])
      [:div "Time: " (.toFixed (/ game-tick ticks-per-second) 1) " s"]
      [:div {:style {:display "flex"
                     :gap 8}}
@@ -715,23 +758,26 @@
 
 (defn menu-view []
   [:div {:style overlay-style}
-   [:div {:style {:font-size 32
-                  :margin-bottom 8}}
+   [:div {:style {:font-size 20
+                  :margin-bottom 4}}
     "reCursed Bricks"]
-   (for [{:match/keys [label key] :as match-option} match-options]
+   (for [[index {:match/keys [label key] :as match-option}] (map-indexed vector match-options)]
      ^{:key key}
      [menu-button {:label label
+                   :selected? (= index @menu-index)
                    :on-click (fn []
                                (start-match! match-option))}])
-   [:div {:style {:opacity 0.6
-                  :margin-top 8}}
-    "H: Help / Controls"]])
+   (when-not rcade/in-cabinet?
+     [:div {:style {:opacity 0.6
+                    :font-size 10
+                    :margin-top 4}}
+      "H: Help / Controls"])])
 
 (def help-rows
   [["WASD / IJKL / Arrows" "Move paddle (1 Player)"]
    ["WASD" "Move Player 1 paddle (2 Player)"]
    ["IJKL / Arrows" "Move Player 2 paddle (2 Player)"]
-   ["1 – 4" "Choose mode (menu)"]
+   ["1 – 4 / ↑↓ Enter" "Choose mode (menu)"]
    ["R" "Replay"]
    ["M / Esc" "Menu"]
    ["X" "Show / hide sliders"]
@@ -805,6 +851,7 @@
                    :width "100vw"
                    :height "100vh"
                    :font-family "sans-serif"
+                   :font-size 12
                    :color "#eee"
                    :background "#111"}}
      (case screen
@@ -859,6 +906,18 @@
          (match-option-for-key (.-key event)))
     (start-match! (match-option-for-key (.-key event)))
 
+    (and (= :screen/menu (:app/screen @app-state))
+         (contains? #{"ArrowUp" "ArrowDown"} (.-key event)))
+    (do
+      (.preventDefault event)
+      (move-menu-cursor! (if (= "ArrowUp" (.-key event))
+                           -1
+                           1)))
+
+    (and (= :screen/menu (:app/screen @app-state))
+         (= "Enter" (.-key event)))
+    (start-match! (selected-match-option))
+
     (and (= :screen/playing (:app/screen @app-state))
          (contains? #{"r" "R"} (.-key event)))
     (new-game!)
@@ -871,6 +930,29 @@
 
 (defn on-key-up! [event]
   (swap! held-keys disj (.-key event)))
+
+(def select-buttons
+  #{:button/a
+    :button/one-player
+    :button/two-player})
+
+(defn on-rcade-press! [{:press/keys [button]}]
+  (let [{:app/keys [screen] :as app} @app-state]
+    (cond
+      (= :screen/menu screen)
+      (case button
+        :button/up (move-menu-cursor! -1)
+        :button/down (move-menu-cursor! 1)
+        (when (select-buttons button)
+          (start-match! (selected-match-option))))
+
+      (and (= :screen/playing screen)
+           (match-over? app)
+           (explosions-finished? @effects))
+      (case button
+        :button/a (new-game!)
+        :button/b (show-menu!)
+        nil))))
 
 (def tick-duration (/ 1000 ticks-per-second))
 
@@ -947,8 +1029,10 @@
 
 (defonce started
   (do
-    (js/window.addEventListener "keydown" on-key-down!)
-    (js/window.addEventListener "keyup" on-key-up!)
+    (when-not rcade/in-cabinet?
+      (js/window.addEventListener "keydown" on-key-down!)
+      (js/window.addEventListener "keyup" on-key-up!))
+    (rcade/connect! on-rcade-press!)
     (js/requestAnimationFrame tick!)
     true))
 
