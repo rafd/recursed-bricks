@@ -217,13 +217,14 @@
                              ")")}])])
 
 (def gravity-arrow-spacing 10)
-(def gravity-arrow-length 3)
+(def gravity-arrow-length 6)
 (def gravity-arrow-head-length 1)
 (def gravity-arrow-head-angle (/ js/Math.PI 6))
-(def gravity-for-full-opacity 0.03)
+(def gravity-for-full-length 0.025)
+(def gravity-arrow-opacity 0.35)
 
-(defn gravity-arrow-path [[x y] direction]
-  (let [half-shaft (physics/scale direction (/ gravity-arrow-length 2))
+(defn gravity-arrow-path [[x y] direction length]
+  (let [half-shaft (physics/scale direction (/ length 2))
         tail (physics/subtract [x y] half-shaft)
         tip (physics/add [x y] half-shaft)
         back (physics/scale direction (- gravity-arrow-head-length))
@@ -237,13 +238,13 @@
 (defn gravity-field-view [{:state/keys [tuning constants]}]
   (let [{:constant/keys [world-width world-height]} constants
         strength (js/Math.abs (:tuning/gravity tuning))
-        opacity (* 0.35 (min 1 (/ strength gravity-for-full-opacity)))]
+        length (* gravity-arrow-length (min 1 (/ strength gravity-for-full-length)))]
     [:g {:stroke "white"
          :stroke-width 0.25
          :stroke-linecap "round"
          :stroke-linejoin "round"
          :fill "none"
-         :opacity opacity
+         :opacity gravity-arrow-opacity
          :pointer-events "none"}
      (for [x (range (/ gravity-arrow-spacing 2) world-width gravity-arrow-spacing)
            y (range (/ gravity-arrow-spacing 2) world-height gravity-arrow-spacing)
@@ -253,7 +254,7 @@
                                                              :location/y y}})]
            :when (> (physics/magnitude gravity) 1e-9)]
        ^{:key (str x "-" y)}
-       [:path {:d (gravity-arrow-path [x y] (physics/normalize gravity))}])]))
+       [:path {:d (gravity-arrow-path [x y] (physics/normalize gravity) length)}])]))
 
 (defn bricks-view [{:state/keys [bricks-alive constants]}]
   (let [{:constant/keys [brick-width brick-height bricks-top]} constants]
