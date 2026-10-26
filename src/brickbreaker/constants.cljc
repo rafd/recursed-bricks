@@ -118,8 +118,8 @@
    {:slider/key :constant/paddle-width
     :slider/label "Paddle width"
     :slider/default 16
-    :slider/min 6
-    :slider/max 32
+    :slider/min 4
+    :slider/max 60
     :slider/step 0.5}
    {:slider/key :constant/paddle-height
     :slider/label "Paddle height"
