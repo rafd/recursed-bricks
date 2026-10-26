@@ -15,10 +15,10 @@
 (def default-tuning
   {:tuning/paddle-acceleration 0.08
    :tuning/paddle-friction 0.96
-   :tuning/paddle-max-speed 100
+   :tuning/paddle-max-speed 20
    :tuning/paddle-angular-damping 0.95
    :tuning/ball-initial-speed 0.1
-   :tuning/ball-max-speed 100
+   :tuning/ball-max-speed 20
    :tuning/gravity 0.01
    :tuning/gravity-mode :gravity/linear
    :tuning/gravity-angle 90

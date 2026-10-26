@@ -2,6 +2,7 @@
   (:require
     [cljs.reader :as reader]
     [clojure.set :as set]
+    [clojure.string :as str]
     [reagent.core :as r]
     [reagent.dom.client :as rdc]
     [brickbreaker.constants :as constants]
@@ -10,9 +11,24 @@
 
 (def world-height 100)
 
-(defn window-world-size []
-  {:constant/world-width (* world-height (/ js/window.innerWidth js/window.innerHeight))
-   :constant/world-height world-height})
+(defn player-ids [mode]
+  (case mode
+    :mode/one-player [:player/one]
+    :mode/two-player [:player/one :player/two]))
+
+(defn opponent [player-id]
+  (case player-id
+    :player/one :player/two
+    :player/two :player/one))
+
+(def player-label
+  {:player/one "Player 1"
+   :player/two "Player 2"})
+
+(defn window-world-size [mode]
+  (let [pane-width (/ js/window.innerWidth (count (player-ids mode)))]
+    {:constant/world-width (* world-height (/ pane-width js/window.innerHeight))
+     :constant/world-height world-height}))
 
 (def slider-storage-key "brickbreaker/slider-values")
 
@@ -43,16 +59,21 @@
                   (= namespace-name (namespace key))))
         values))
 
-(defonce game-state
-  (r/atom (let [stored-values (load-slider-values)]
-            (game/new-game {:seed (rand-int 1000000)
-                            :tuning (values-in-namespace stored-values "tuning")
-                            :constants (merge (window-world-size)
-                                              (values-in-namespace stored-values "constant"))}))))
+(defonce app-state
+  (r/atom {:app/screen :screen/menu
+           :app/mode :mode/one-player
+           :app/cursed? false
+           :app/players {}}))
+
+(defn player-state [player-id]
+  (get-in @app-state [:app/players player-id]))
+
+(def initial-effects
+  {:effects/frame 0
+   :effects/explosions []})
 
 (defonce effects
-  (r/atom {:effects/frame 0
-           :effects/explosions []}))
+  (r/atom {}))
 
 (def explosion-duration 45)
 (def fragment-columns 3)
@@ -62,12 +83,22 @@
 (defonce held-keys
   (atom #{}))
 
-(def key->direction
+(def arrow-and-ijkl->direction
   {"ArrowLeft" :action/left
    "ArrowRight" :action/right
    "ArrowUp" :action/up
    "ArrowDown" :action/down
-   "a" :action/left
+   "j" :action/left
+   "l" :action/right
+   "i" :action/up
+   "k" :action/down
+   "J" :action/left
+   "L" :action/right
+   "I" :action/up
+   "K" :action/down})
+
+(def wasd->direction
+  {"a" :action/left
    "d" :action/right
    "w" :action/up
    "s" :action/down
@@ -77,6 +108,9 @@
    "S" :action/down})
 
 (defonce sliders-visible?
+  (r/atom false))
+
+(defonce help-visible?
   (r/atom false))
 
 (defonce frame-rate
@@ -101,8 +135,17 @@
         (reset! frame-rate-sample {:sample/start-time timestamp
                                    :sample/frame-count 0})))))
 
-(defn current-action []
-  (into #{} (keep key->direction) @held-keys))
+(def key->direction
+  (merge arrow-and-ijkl->direction wasd->direction))
+
+(defn player-key-map [mode player-id]
+  (case [mode player-id]
+    [:mode/one-player :player/one] key->direction
+    [:mode/two-player :player/one] wasd->direction
+    [:mode/two-player :player/two] arrow-and-ijkl->direction))
+
+(defn current-action [mode player-id]
+  (into #{} (keep (player-key-map mode player-id)) @held-keys))
 
 (defn brick-color [row]
   (str "hsl(" (* row 36) ", 70%, 55%)"))
@@ -164,6 +207,45 @@
                              (* spin age)
                              ")")}])])
 
+(def gravity-arrow-spacing 10)
+(def gravity-arrow-length 3)
+(def gravity-arrow-head-length 1)
+(def gravity-arrow-head-angle (/ js/Math.PI 6))
+(def gravity-for-full-opacity 0.03)
+
+(defn gravity-arrow-path [[x y] direction]
+  (let [half-shaft (physics/scale direction (/ gravity-arrow-length 2))
+        tail (physics/subtract [x y] half-shaft)
+        tip (physics/add [x y] half-shaft)
+        back (physics/scale direction (- gravity-arrow-head-length))
+        head-left (physics/add tip (physics/rotate back gravity-arrow-head-angle))
+        head-right (physics/add tip (physics/rotate back (- gravity-arrow-head-angle)))
+        point (fn [[point-x point-y]]
+                (str point-x " " point-y))]
+    (str "M " (point tail) " L " (point tip)
+         " M " (point head-left) " L " (point tip) " L " (point head-right))))
+
+(defn gravity-field-view [{:state/keys [tuning constants]}]
+  (let [{:constant/keys [world-width world-height]} constants
+        strength (js/Math.abs (:tuning/gravity tuning))
+        opacity (* 0.35 (min 1 (/ strength gravity-for-full-opacity)))]
+    [:g {:stroke "white"
+         :stroke-width 0.25
+         :stroke-linecap "round"
+         :stroke-linejoin "round"
+         :fill "none"
+         :opacity opacity
+         :pointer-events "none"}
+     (for [x (range (/ gravity-arrow-spacing 2) world-width gravity-arrow-spacing)
+           y (range (/ gravity-arrow-spacing 2) world-height gravity-arrow-spacing)
+           :let [gravity (physics/gravity-vector {:tuning tuning
+                                                  :constants constants
+                                                  :location {:location/x x
+                                                             :location/y y}})]
+           :when (> (physics/magnitude gravity) 1e-9)]
+       ^{:key (str x "-" y)}
+       [:path {:d (gravity-arrow-path [x y] (physics/normalize gravity))}])]))
+
 (defn bricks-view [{:state/keys [bricks-alive constants]}]
   (let [{:constant/keys [brick-width brick-height bricks-top]} constants]
     [:g
@@ -178,17 +260,19 @@
                :stroke-width 0.3}])]))
 
 
+;; Min paddle acceleration stays above max gravity, so the paddle can always fight it.
 (def tuning-sliders
   [{:slider/key :tuning/paddle-acceleration
     :slider/label "Paddle acceleration"
-    :slider/min 0.05
-    :slider/max 1
+    :slider/min 0.04
+    :slider/max 0.25
     :slider/step 0.01}
    {:slider/key :tuning/paddle-friction
     :slider/label "Paddle friction (velocity kept per tick)"
-    :slider/min 0.5
-    :slider/max 1
-    :slider/step 0.01}
+    :slider/min 0.85
+    :slider/max 0.99
+    :slider/step 0.005
+    :slider/curse-step 0.02}
    {:slider/key :tuning/paddle-max-speed
     :slider/label "Paddle max speed"
     :slider/min 0.5
@@ -197,9 +281,10 @@
     :slider/mutable? false}
    {:slider/key :tuning/paddle-angular-damping
     :slider/label "Paddle angular damping (spin kept per tick)"
-    :slider/min 0.5
-    :slider/max 1
-    :slider/step 0.01}
+    :slider/min 0.8
+    :slider/max 0.99
+    :slider/step 0.005
+    :slider/curse-step 0.03}
    {:slider/key :tuning/ball-initial-speed
     :slider/label "Ball initial speed"
     :slider/min 0.05
@@ -214,47 +299,54 @@
     :slider/mutable? false}
    {:slider/key :tuning/gravity
     :slider/label "Gravity"
-    :slider/min -0.03
-    :slider/max 0.03
-    :slider/step 0.0005}
+    :slider/min -0.025
+    :slider/max 0.025
+    :slider/step 0.0005
+    :slider/curse-step 0.004}
    {:slider/key :tuning/gravity-angle
     :slider/label "Gravity angle (degrees, 90 is down)"
     :slider/min 0
     :slider/max 360
     :slider/step 1
+    :slider/curse-step 30
+    :slider/wraps? true
     :slider/gravity-mode :gravity/linear}
    {:slider/key :tuning/gravity-center-x
     :slider/label "Gravity center x (fraction of width)"
     :slider/min 0
     :slider/max 1
     :slider/step 0.01
+    :slider/curse-step 0.1
     :slider/gravity-mode :gravity/radial}
    {:slider/key :tuning/gravity-center-y
     :slider/label "Gravity center y (fraction of height)"
     :slider/min 0
     :slider/max 1
     :slider/step 0.01
+    :slider/curse-step 0.1
     :slider/gravity-mode :gravity/radial}
    {:slider/key :tuning/ball-drag
     :slider/label "Ball drag"
     :slider/min 0
-    :slider/max 0.01
-    :slider/step 0.0001}
+    :slider/max 0.004
+    :slider/step 0.0001
+    :slider/curse-step 0.0004}
    {:slider/key :tuning/ball-mass
     :slider/label "Ball mass"
-    :slider/min 0.1
-    :slider/max 10
-    :slider/step 0.1}
+    :slider/min 0.25
+    :slider/max 4
+    :slider/step 0.05}
    {:slider/key :tuning/paddle-mass
     :slider/label "Paddle mass"
-    :slider/min 1
-    :slider/max 200
+    :slider/min 3
+    :slider/max 40
     :slider/step 1}
    {:slider/key :tuning/restitution
     :slider/label "Restitution (bounciness)"
-    :slider/min 0
-    :slider/max 1
-    :slider/step 0.05}
+    :slider/min 0.5
+    :slider/max 1.1
+    :slider/step 0.05
+    :slider/curse-step 0.1}
    {:slider/key :constant/world-width
     :slider/label "World width"
     :slider/min 50
@@ -269,18 +361,18 @@
     :slider/needs-restart? true}
    {:slider/key :constant/paddle-width
     :slider/label "Paddle width"
-    :slider/min 2
-    :slider/max 50
+    :slider/min 6
+    :slider/max 32
     :slider/step 0.5}
    {:slider/key :constant/paddle-height
     :slider/label "Paddle height"
-    :slider/min 0.5
-    :slider/max 10
+    :slider/min 1.5
+    :slider/max 6
     :slider/step 0.5}
    {:slider/key :constant/ball-radius
     :slider/label "Ball radius"
-    :slider/min 0.25
-    :slider/max 5
+    :slider/min 0.75
+    :slider/max 3
     :slider/step 0.25}
    {:slider/key :constant/brick-columns
     :slider/label "Brick columns"
@@ -313,21 +405,86 @@
     :slider/step 1
     :slider/mutable? false}])
 
+(def key->slider
+  (into {}
+        (map (fn [slider]
+               [(:slider/key slider) slider]))
+        tuning-sliders))
+
+(defn clamp-to-slider [{:slider/keys [wraps?] low :slider/min high :slider/max} value]
+  (if wraps?
+    (+ low (mod (- value low) (- high low)))
+    (-> value
+        (max low)
+        (min high))))
+
+(defn clamp-slider-values [values]
+  (into {}
+        (map (fn [[key value]]
+               (if-let [slider (key->slider key)]
+                 [key (clamp-to-slider slider value)]
+                 [key value])))
+        values))
+
 (defn slider-path [key]
   [(if (= "constant" (namespace key))
      :state/constants
      :state/tuning)
    key])
 
+(defonce toasts
+  (r/atom []))
+
+(def match-options
+  [{:match/label "1 Player (Stable)"
+    :match/key "1"
+    :match/mode :mode/one-player
+    :match/cursed? false}
+   {:match/label "1 Player (Cursed)"
+    :match/key "2"
+    :match/mode :mode/one-player
+    :match/cursed? true}
+   {:match/label "2 Player (Stable)"
+    :match/key "3"
+    :match/mode :mode/two-player
+    :match/cursed? false}
+   {:match/label "2 Player (Cursed)"
+    :match/key "4"
+    :match/mode :mode/two-player
+    :match/cursed? true}])
+
+(defn start-match! [{:match/keys [mode cursed?]}]
+  (let [seed (rand-int 1000000)
+        stored-values (clamp-slider-values (load-slider-values))
+        new-player-state (game/new-game {:seed seed
+                                         :tuning (values-in-namespace stored-values "tuning")
+                                         :constants (merge (window-world-size mode)
+                                                           (values-in-namespace stored-values "constant"))})
+        ids (player-ids mode)]
+    (reset! effects (zipmap ids (repeat initial-effects)))
+    (reset! toasts [])
+    (reset! app-state {:app/screen :screen/playing
+                       :app/mode mode
+                       :app/cursed? cursed?
+                       :app/players (zipmap ids (repeat new-player-state))})))
+
 (defn new-game! []
-  (reset! game-state (game/new-game {:seed (rand-int 1000000)
-                                     :tuning (:state/tuning @game-state)
-                                     :constants (:state/constants @game-state)})))
+  (let [{:app/keys [mode cursed?]} @app-state]
+    (start-match! {:match/mode mode
+                   :match/cursed? cursed?})))
+
+(defn show-menu! []
+  (swap! app-state assoc :app/screen :screen/menu))
+
+(defn update-all-players! [f]
+  (swap! app-state update :app/players update-vals f))
 
 (defn set-slider-value! [key text]
-  (let [value (js/parseFloat text)]
-    (when (js/isFinite value)
-      (swap! game-state assoc-in (slider-path key) value)
+  (let [parsed (js/parseFloat text)
+        value (clamp-to-slider (key->slider key) parsed)]
+    (when (js/isFinite parsed)
+      (update-all-players! (fn [state]
+                             (assoc-in state (slider-path key) value)))
       (save-slider-value! key value))))
 
 (defn slider-active? [state slider]
@@ -336,57 +493,36 @@
         (= gravity-mode (get-in state [:state/tuning :tuning/gravity-mode])))))
 
 (defn set-gravity-mode! [gravity-mode]
-  (swap! game-state assoc-in [:state/tuning :tuning/gravity-mode] gravity-mode)
+  (update-all-players! (fn [state]
+                         (assoc-in state [:state/tuning :tuning/gravity-mode] gravity-mode)))
   (save-slider-value! :tuning/gravity-mode gravity-mode))
 
 (defn default-slider-value [key]
   (get (merge constants/default-constants
-              (window-world-size)
+              (window-world-size (:app/mode @app-state))
               constants/default-tuning)
        key))
 
 (defn reset-sliders! []
   (clear-slider-values!)
-  (swap! game-state
-         (fn [state]
-           (reduce (fn [state {:slider/keys [key]}]
-                     (assoc-in state (slider-path key) (default-slider-value key)))
-                   (assoc-in state
-                             [:state/tuning :tuning/gravity-mode]
-                             (:tuning/gravity-mode constants/default-tuning))
-                   tuning-sliders))))
-
-(def bricks-mutate-constants-storage-key "brickbreaker/bricks-mutate-constants")
-
-(defn load-bricks-mutate-constants? []
-  (try
-    (= "true" (js/localStorage.getItem bricks-mutate-constants-storage-key))
-    (catch :default _
-      false)))
-
-(defn save-bricks-mutate-constants! [enabled?]
-  (try
-    (js/localStorage.setItem bricks-mutate-constants-storage-key (str enabled?))
-    (catch :default _
-      nil)))
-
-(defonce bricks-mutate-constants?
-  (r/atom (load-bricks-mutate-constants?)))
-
-(defn toggle-bricks-mutate-constants! []
-  (save-bricks-mutate-constants! (swap! bricks-mutate-constants? not)))
-
-(defonce toasts
-  (r/atom []))
+  (update-all-players!
+    (fn [state]
+      (reduce (fn [state {:slider/keys [key]}]
+                (assoc-in state (slider-path key) (default-slider-value key)))
+              (assoc-in state
+                        [:state/tuning :tuning/gravity-mode]
+                        (:tuning/gravity-mode constants/default-tuning))
+              tuning-sliders))))
 
 (defonce toast-counter
   (atom 0))
 
 (def toast-duration 3000)
 
-(defn show-toast! [text]
+(defn show-toast! [player-id text]
   (let [id (swap! toast-counter inc)]
     (swap! toasts conj {:toast/id id
+                        :toast/player player-id
                         :toast/text text})
     (js/setTimeout (fn []
                      (swap! toasts (fn [current-toasts]
@@ -395,40 +531,65 @@
                                               current-toasts))))
                    toast-duration)))
 
-(defn format-value [value]
-  (str (js/Number (.toPrecision value 3))))
+(defn short-label [label]
+  (str/replace label #" \(.*\)$" ""))
 
-(def mutation-factors [0.5 2])
+(defn change-arrow [old-value new-value]
+  (cond
+    (> new-value old-value) "↑"
+    (< new-value old-value) "↓"))
+
+(def mutation-factors [0.8 1.25])
+
+(defn cursed-value [{:slider/keys [curse-step]} value]
+  (if curse-step
+    (+ value (rand-nth [(- curse-step) curse-step]))
+    (* value (rand-nth mutation-factors))))
 
 (defn mutable-slider? [slider]
   (and (not (:slider/needs-restart? slider))
        (get slider :slider/mutable? true)))
 
-(defn mutate-random-slider! []
-  (let [slider (->> tuning-sliders
-                    (filter mutable-slider?)
-                    (filter (fn [slider]
-                              (slider-active? @game-state slider)))
-                    rand-nth)
-        path (slider-path (:slider/key slider))
-        old-value (get-in @game-state path)
-        new-value (-> (* old-value (rand-nth mutation-factors))
-                      (max (:slider/min slider))
-                      (min (:slider/max slider)))]
-    (swap! game-state assoc-in path new-value)
-    (show-toast! (str (:slider/label slider) ": "
-                      (format-value old-value) " → " (format-value new-value)))))
+(defn mutate-slider! [player-id slider]
+  (let [path (into [:app/players player-id] (slider-path (:slider/key slider)))
+        old-value (get-in @app-state path)
+        new-value (clamp-to-slider slider (cursed-value slider old-value))]
+    (swap! app-state assoc-in path new-value)
+    (when-let [arrow (change-arrow old-value new-value)]
+      (show-toast! player-id (str (short-label (:slider/label slider)) " " arrow)))))
 
-(defn toasts-view []
+(defn switch-gravity-mode! [player-id]
+  (let [path [:app/players player-id :state/tuning :tuning/gravity-mode]
+        new-mode (if (= :gravity/linear (get-in @app-state path))
+                   :gravity/radial
+                   :gravity/linear)]
+    (swap! app-state assoc-in path new-mode)
+    (show-toast! player-id (str "Gravity mode: " (str/capitalize (name new-mode))))))
+
+(defn curse-player! [player-id]
+  (let [state (player-state player-id)
+        curse (->> tuning-sliders
+                   (filter mutable-slider?)
+                   (filter (fn [slider]
+                             (slider-active? state slider)))
+                   (cons :curse/switch-gravity-mode)
+                   rand-nth)]
+    (if (= :curse/switch-gravity-mode curse)
+      (switch-gravity-mode! player-id)
+      (mutate-slider! player-id curse))))
+
+(defn toasts-view [player-id]
   [:div {:style {:position "absolute"
-                 :top 8
-                 :right 8
+                 :bottom 16
+                 :left "50%"
+                 :transform "translateX(-50%)"
                  :display "flex"
                  :flex-direction "column"
                  :gap 6
-                 :align-items "flex-end"
+                 :align-items "center"
                  :pointer-events "none"}}
-   (for [{:toast/keys [id text]} @toasts]
+   (for [{:toast/keys [id text player]} @toasts
+         :when (= player-id player)]
      ^{:key id}
      [:div {:style {:padding "6px 12px"
                     :background "rgba(0, 0, 0, 0.75)"
@@ -436,7 +597,7 @@
       text])])
 
 (defn tuning-slider [{:slider/keys [key label min max step needs-restart?]}]
-  (let [value (get-in @game-state (slider-path key))]
+  (let [value (get-in (player-state :player/one) (slider-path key))]
     [:div
      [:div label
       (when needs-restart?
@@ -461,9 +622,9 @@
 
 (defn tuning-panel []
   [:div {:style {:position "absolute"
-                 :top 40
+                 :top 8
                  :left 8
-                 :max-height "calc(100vh - 56px)"
+                 :max-height "calc(100vh - 16px)"
                  :overflow-y "auto"
                  :padding 12
                  :display "grid"
@@ -479,22 +640,15 @@
                           (reset-sliders!))}
      "Reset to defaults"]]
    [:label {:style {:grid-column "1 / -1"}}
-    [:input {:type "checkbox"
-             :checked @bricks-mutate-constants?
-             :on-change (fn [event]
-                          (.blur (.-currentTarget event))
-                          (toggle-bricks-mutate-constants!))}]
-    " Bricks mutate constants"]
-   [:label {:style {:grid-column "1 / -1"}}
     "Gravity mode "
-    [:select {:value (name (get-in @game-state [:state/tuning :tuning/gravity-mode]))
+    [:select {:value (name (get-in (player-state :player/one) [:state/tuning :tuning/gravity-mode]))
               :on-change (fn [event]
                            (.blur (.-currentTarget event))
                            (set-gravity-mode! (keyword "gravity" (.. event -target -value))))}
      [:option {:value "linear"} "Linear"]
      [:option {:value "radial"} "Radial"]]]
    (for [slider tuning-sliders
-         :when (slider-active? @game-state slider)]
+         :when (slider-active? (player-state :player/one) slider)]
      ^{:key (:slider/key slider)}
      [tuning-slider slider])])
 
@@ -502,51 +656,121 @@
   [:button {:on-click (fn [event]
                         (.blur (.-currentTarget event))
                         (new-game!))}
-   "Replay"])
+   "Replay (R)"])
 
-(defn sliders-toggle-button []
+(defn menu-button [{:keys [label on-click]}]
+  [:button {:style {:font-size 18
+                    :padding "8px 16px"}
+            :on-click (fn [event]
+                        (.blur (.-currentTarget event))
+                        (on-click))}
+   label])
+
+(defn back-to-menu-button []
   [:button {:on-click (fn [event]
                         (.blur (.-currentTarget event))
-                        (swap! sliders-visible? not))}
-   (if @sliders-visible?
-     "Hide sliders"
-     "Show sliders")])
+                        (show-menu!))}
+   "Menu (M)"])
 
 (def ticks-per-second 60)
 
-(defn game-over-view [{:state/keys [game-tick]}]
-  [:div {:style {:position "absolute"
-                 :top "50%"
-                 :left "50%"
-                 :transform "translate(-50%, -50%)"
-                 :display "flex"
-                 :flex-direction "column"
-                 :gap 12
-                 :align-items "center"
-                 :padding 16
-                 :background "rgba(0, 0, 0, 0.75)"
-                 :border-radius 6}}
-   [:div "Time: " (.toFixed (/ game-tick ticks-per-second) 1) " s"]
-   [replay-button]])
+(def overlay-style
+  {:position "absolute"
+   :top "50%"
+   :left "50%"
+   :transform "translate(-50%, -50%)"
+   :display "flex"
+   :flex-direction "column"
+   :gap 12
+   :align-items "center"
+   :padding 16
+   :background "rgba(0, 0, 0, 0.75)"
+   :border-radius 6})
 
-(defn hud-view [state]
+(defn winners [{:app/keys [mode players]}]
+  (filterv (fn [player-id]
+             (= :status/won (get-in players [player-id :state/game-status])))
+           (player-ids mode)))
+
+(defn match-over? [app]
+  (seq (winners app)))
+
+(defn result-text [{:app/keys [mode] :as app}]
+  (when (= :mode/two-player mode)
+    (let [match-winners (winners app)]
+      (if (= 1 (count match-winners))
+        (str (player-label (first match-winners)) " wins!")
+        "Draw!"))))
+
+(defn game-over-view [app]
+  (let [game-tick (get-in app [:app/players :player/one :state/game-tick])]
+    [:div {:style overlay-style}
+     (when-let [text (result-text app)]
+       [:div {:style {:font-size 28}} text])
+     [:div "Time: " (.toFixed (/ game-tick ticks-per-second) 1) " s"]
+     [:div {:style {:display "flex"
+                    :gap 8}}
+      [replay-button]
+      [back-to-menu-button]]]))
+
+(defn menu-view []
+  [:div {:style overlay-style}
+   [:div {:style {:font-size 32
+                  :margin-bottom 8}}
+    "reCursed Bricks"]
+   (for [{:match/keys [label key] :as match-option} match-options]
+     ^{:key key}
+     [menu-button {:label label
+                   :on-click (fn []
+                               (start-match! match-option))}])
+   [:div {:style {:opacity 0.6
+                  :margin-top 8}}
+    "H: Help / Controls"]])
+
+(def help-rows
+  [["WASD / IJKL / Arrows" "Move paddle (1 Player)"]
+   ["WASD" "Move Player 1 paddle (2 Player)"]
+   ["IJKL / Arrows" "Move Player 2 paddle (2 Player)"]
+   ["1 – 4" "Choose mode (menu)"]
+   ["R" "Replay"]
+   ["M / Esc" "Menu"]
+   ["X" "Show / hide sliders"]
+   ["H" "Show / hide help"]])
+
+(defn help-view []
+  [:div {:style (assoc overlay-style
+                       :z-index 1
+                       :background "rgba(0, 0, 0, 0.92)")}
+   [:div {:style {:font-size 24}}
+    "Controls"]
+   [:div {:style {:display "grid"
+                  :grid-template-columns "auto auto"
+                  :gap "6px 24px"}}
+    (for [[keys-text description] help-rows]
+      ^{:key keys-text}
+      [:<>
+       [:div {:style {:font-weight "bold"}} keys-text]
+       [:div description]])]])
+
+(defn explosions-finished? [effects-by-player]
+  (every? (fn [player-effects]
+            (empty? (:effects/explosions player-effects)))
+          (vals effects-by-player)))
+
+(defn hud-view [app]
   [:<>
-   [:div {:style {:position "absolute"
-                  :top 8
-                  :left 8}}
-    [sliders-toggle-button]]
-   (when (game/game-over? state)
-     [game-over-view state])])
+   (when (and (match-over? app)
+              (explosions-finished? @effects))
+     [game-over-view app])])
 
-(defn game-view []
-  (let [{:state/keys [paddle-location paddle-angle ball-location constants tuning] :as state} @game-state
+(defn player-view [player-id]
+  (let [{:state/keys [paddle-location paddle-angle ball-location constants] :as state} (player-state player-id)
         {:constant/keys [world-width world-height paddle-width paddle-height ball-radius]} constants]
     [:div {:style {:position "relative"
-                   :width "100vw"
-                   :height "100vh"
-                   :font-family "sans-serif"
-                   :color "#eee"
-                   :background "#111"}}
+                   :flex 1
+                   :min-width 0
+                   :border-left (when (= :player/two player-id)
+                                  "2px solid #555")}}
      [:svg {:view-box (str "0 0 " world-width " " world-height)
             :style {:width "100%"
                     :height "100%"
@@ -554,18 +778,9 @@
       [:rect {:width world-width
               :height world-height
               :fill "#222"}]
+      [gravity-field-view state]
       [bricks-view state]
-      [explosions-view @effects constants]
-      (when (= :gravity/radial (:tuning/gravity-mode tuning))
-        (let [[center-x center-y] (physics/gravity-center {:tuning tuning
-                                                           :constants constants})]
-          [:circle {:cx center-x
-                    :cy center-y
-                    :r 1.5
-                    :fill "none"
-                    :stroke "rgba(255, 255, 255, 0.3)"
-                    :stroke-width 0.3
-                    :pointer-events "none"}]))
+      [explosions-view (get @effects player-id) constants]
       [:rect {:x (- (/ paddle-width 2))
               :y (- (/ paddle-height 2))
               :width paddle-width
@@ -582,14 +797,43 @@
                 :cy (:location/y ball-location)
                 :r ball-radius
                 :fill "#fff"}]]
-     [hud-view state]
-     [toasts-view]
-     (when @sliders-visible?
-       [tuning-panel])]))
+     [toasts-view player-id]]))
+
+(defn game-view []
+  (let [{:app/keys [screen mode] :as app} @app-state]
+    [:div {:style {:position "relative"
+                   :width "100vw"
+                   :height "100vh"
+                   :font-family "sans-serif"
+                   :color "#eee"
+                   :background "#111"}}
+     (case screen
+       :screen/menu
+       [menu-view]
+
+       :screen/playing
+       [:<>
+        [:div {:style {:display "flex"
+                       :width "100%"
+                       :height "100%"}}
+         (for [player-id (player-ids mode)]
+           ^{:key player-id}
+           [player-view player-id])]
+        [hud-view app]
+        (when @sliders-visible?
+          [tuning-panel])])
+     (when @help-visible?
+       [help-view])]))
 
 
 (defn typing-in-number-field? [event]
   (= "number" (.. event -target -type)))
+
+(defn match-option-for-key [key]
+  (some (fn [match-option]
+          (when (= key (:match/key match-option))
+            match-option))
+        match-options))
 
 (defn on-key-down! [event]
   (cond
@@ -597,7 +841,26 @@
     (when (= "Enter" (.-key event))
       (.blur (.-target event)))
 
-    (contains? #{"r" "R"} (.-key event))
+    (and (= "Escape" (.-key event))
+         @help-visible?)
+    (reset! help-visible? false)
+
+    (contains? #{"Escape" "m" "M"} (.-key event))
+    (show-menu!)
+
+    (contains? #{"h" "H"} (.-key event))
+    (swap! help-visible? not)
+
+    (and (= :screen/playing (:app/screen @app-state))
+         (contains? #{"x" "X"} (.-key event)))
+    (swap! sliders-visible? not)
+
+    (and (= :screen/menu (:app/screen @app-state))
+         (match-option-for-key (.-key event)))
+    (start-match! (match-option-for-key (.-key event)))
+
+    (and (= :screen/playing (:app/screen @app-state))
+         (contains? #{"r" "R"} (.-key event)))
     (new-game!)
 
     :else
@@ -633,21 +896,47 @@
      :clock/unsimulated-time (- available (* tick-count tick-duration))
      :clock/tick-count tick-count}))
 
-(defn step-game! []
-  (let [before @game-state
-        after (swap! game-state game/step (current-action))
+(defn step-player-and-get-broken-cells! [mode player-id]
+  (let [before (player-state player-id)
+        after (game/step before (current-action mode player-id))
         broken-cells (set/difference (:state/bricks-alive before)
                                      (:state/bricks-alive after))]
-    (swap! effects advance-effects broken-cells)
-    (when @bricks-mutate-constants?
-      (dotimes [_ (count broken-cells)]
-        (mutate-random-slider!)))))
+    (swap! app-state assoc-in [:app/players player-id] after)
+    (swap! effects update player-id advance-effects broken-cells)
+    broken-cells))
+
+(defn mutation-target [mode player-id]
+  (case mode
+    :mode/one-player player-id
+    :mode/two-player (opponent player-id)))
+
+(defn step-match! []
+  (let [{:app/keys [mode cursed?]} @app-state]
+    (doseq [player-id (player-ids mode)]
+      (let [broken-cells (step-player-and-get-broken-cells! mode player-id)]
+        (when cursed?
+          (dotimes [_ (count broken-cells)]
+            (curse-player! (mutation-target mode player-id))))))))
+
+(defn match-running? [{:app/keys [screen] :as app}]
+  (and (= :screen/playing screen)
+       (not (match-over? app))))
+
+(defn advance-effects-only! []
+  (swap! effects update-vals (fn [player-effects]
+                               (advance-effects player-effects #{}))))
 
 (defn tick! [timestamp]
   (record-frame! timestamp)
   (let [{:clock/keys [tick-count]} (swap! frame-clock advance-frame-clock timestamp)]
     (dotimes [_ tick-count]
-      (step-game!)))
+      (let [{:app/keys [screen] :as app} @app-state]
+        (cond
+          (match-running? app)
+          (step-match!)
+
+          (= :screen/playing screen)
+          (advance-effects-only!)))))
   (js/requestAnimationFrame tick!))
 
 (defonce root

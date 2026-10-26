@@ -354,10 +354,17 @@
         drag-factor (max 0 (- 1 (* (:tuning/ball-drag tuning) (magnitude velocity))))]
     (assoc state :state/ball-velocity (vector->velocity (scale velocity drag-factor)))))
 
+(defn limit-ball-speed [{:state/keys [tuning] :as state}]
+  (update state :state/ball-velocity (fn [velocity]
+                                       (-> (velocity->vector velocity)
+                                           (limit-magnitude (:tuning/ball-max-speed tuning))
+                                           vector->velocity))))
+
 (defn move-ball [state]
   (-> state
       apply-ball-gravity
       apply-ball-drag
+      limit-ball-speed
       move-ball-x
       move-ball-y))
 
