@@ -1,0 +1,3 @@
+{:paths ["scripts"]
+ :tasks {export {:doc "Export game as single HTML file"
+                 :task (exec 'export/-main)}}}

@@ -1,0 +1,30 @@
+(ns brickbreaker.constants)
+
+(def default-constants
+  {:constant/world-width 100
+   :constant/world-height 100
+   :constant/paddle-width 16
+   :constant/paddle-height 2
+   :constant/ball-radius 1
+   :constant/brick-columns 10
+   :constant/brick-rows 10
+   :constant/brick-height-ratio 0.04
+   :constant/brick-fill-ratio 1
+   :constant/bricks-top 10})
+
+(def default-tuning
+  {:tuning/paddle-acceleration 0.08
+   :tuning/paddle-friction 0.96
+   :tuning/paddle-max-speed 100
+   :tuning/paddle-angular-damping 0.95
+   :tuning/ball-initial-speed 0.1
+   :tuning/ball-max-speed 100
+   :tuning/gravity 0.01
+   :tuning/gravity-mode :gravity/linear
+   :tuning/gravity-angle 90
+   :tuning/gravity-center-x 0.5
+   :tuning/gravity-center-y 0.5
+   :tuning/ball-drag 0.0008
+   :tuning/ball-mass 1
+   :tuning/paddle-mass 10
+   :tuning/restitution 0.95})
