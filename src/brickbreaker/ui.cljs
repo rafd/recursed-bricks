@@ -269,158 +269,11 @@
                :stroke "#111"
                :stroke-width 0.3}])]))
 
-
-;; Min paddle acceleration stays above max gravity, so the paddle can always fight it.
-(def tuning-sliders
-  [{:slider/key :tuning/paddle-acceleration
-    :slider/label "Paddle acceleration"
-    :slider/min 0.04
-    :slider/max 0.25
-    :slider/step 0.01}
-   {:slider/key :tuning/paddle-friction
-    :slider/label "Paddle friction (velocity kept per tick)"
-    :slider/min 0.85
-    :slider/max 0.99
-    :slider/step 0.005
-    :slider/curse-step 0.02}
-   {:slider/key :tuning/paddle-max-speed
-    :slider/label "Paddle max speed"
-    :slider/min 0.5
-    :slider/max 100
-    :slider/step 0.5
-    :slider/mutable? false}
-   {:slider/key :tuning/paddle-angular-damping
-    :slider/label "Paddle angular damping (spin kept per tick)"
-    :slider/min 0.8
-    :slider/max 0.99
-    :slider/step 0.005
-    :slider/curse-step 0.03}
-   {:slider/key :tuning/ball-initial-speed
-    :slider/label "Ball initial speed"
-    :slider/min 0.05
-    :slider/max 4
-    :slider/step 0.05
-    :slider/mutable? false}
-   {:slider/key :tuning/ball-max-speed
-    :slider/label "Ball max speed"
-    :slider/min 0.5
-    :slider/max 100
-    :slider/step 0.5
-    :slider/mutable? false}
-   {:slider/key :tuning/gravity
-    :slider/label "Gravity"
-    :slider/min -0.025
-    :slider/max 0.025
-    :slider/step 0.0005
-    :slider/curse-step 0.004}
-   {:slider/key :tuning/gravity-angle
-    :slider/label "Gravity angle (degrees, 90 is down)"
-    :slider/min 0
-    :slider/max 360
-    :slider/step 1
-    :slider/curse-step 30
-    :slider/wraps? true
-    :slider/gravity-mode :gravity/linear}
-   {:slider/key :tuning/gravity-center-x
-    :slider/label "Gravity center x (fraction of width)"
-    :slider/min 0
-    :slider/max 1
-    :slider/step 0.01
-    :slider/curse-step 0.25
-    :slider/gravity-mode :gravity/radial}
-   {:slider/key :tuning/gravity-center-y
-    :slider/label "Gravity center y (fraction of height)"
-    :slider/min 0
-    :slider/max 1
-    :slider/step 0.01
-    :slider/curse-step 0.25
-    :slider/gravity-mode :gravity/radial}
-   {:slider/key :tuning/ball-drag
-    :slider/label "Ball drag"
-    :slider/min 0
-    :slider/max 0.004
-    :slider/step 0.0001
-    :slider/curse-step 0.0004}
-   {:slider/key :tuning/ball-mass
-    :slider/label "Ball mass"
-    :slider/min 0.25
-    :slider/max 4
-    :slider/step 0.05}
-   {:slider/key :tuning/paddle-mass
-    :slider/label "Paddle mass"
-    :slider/min 3
-    :slider/max 40
-    :slider/step 1}
-   {:slider/key :tuning/restitution
-    :slider/label "Restitution (bounciness)"
-    :slider/min 0.5
-    :slider/max 1.1
-    :slider/step 0.05
-    :slider/curse-step 0.1}
-   {:slider/key :constant/world-width
-    :slider/label "World width"
-    :slider/min 50
-    :slider/max 400
-    :slider/step 1
-    :slider/needs-restart? true}
-   {:slider/key :constant/world-height
-    :slider/label "World height"
-    :slider/min 50
-    :slider/max 400
-    :slider/step 1
-    :slider/needs-restart? true}
-   {:slider/key :constant/paddle-width
-    :slider/label "Paddle width"
-    :slider/min 6
-    :slider/max 32
-    :slider/step 0.5}
-   {:slider/key :constant/paddle-height
-    :slider/label "Paddle height"
-    :slider/min 1.5
-    :slider/max 6
-    :slider/step 0.5}
-   {:slider/key :constant/ball-radius
-    :slider/label "Ball radius"
-    :slider/min 0.5
-    :slider/max 5
-    :slider/step 0.1
-    :slider/curse-step 0.5}
-   {:slider/key :constant/brick-columns
-    :slider/label "Brick columns"
-    :slider/min 1
-    :slider/max 20
-    :slider/step 1
-    :slider/needs-restart? true}
-   {:slider/key :constant/brick-rows
-    :slider/label "Brick rows"
-    :slider/min 1
-    :slider/max 20
-    :slider/step 1
-    :slider/needs-restart? true}
-   {:slider/key :constant/brick-height-ratio
-    :slider/label "Brick height ratio"
-    :slider/min 0.01
-    :slider/max 0.1
-    :slider/step 0.005
-    :slider/needs-restart? true}
-   {:slider/key :constant/brick-fill-ratio
-    :slider/label "Brick fill ratio"
-    :slider/min 0
-    :slider/max 1
-    :slider/step 0.05
-    :slider/needs-restart? true}
-   {:slider/key :constant/bricks-top
-    :slider/label "Bricks top"
-    :slider/min 0
-    :slider/max 50
-    :slider/step 1
-    :slider/mutable? false}])
-
 (def key->slider
   (into {}
         (map (fn [slider]
                [(:slider/key slider) slider]))
-        tuning-sliders))
+        constants/tuning-sliders))
 
 (defn clamp-to-slider [{:slider/keys [wraps?] low :slider/min high :slider/max} value]
   (if wraps?
@@ -533,7 +386,7 @@
               (assoc-in state
                         [:state/tuning :tuning/gravity-mode]
                         (:tuning/gravity-mode constants/default-tuning))
-              tuning-sliders))))
+              constants/tuning-sliders))))
 
 (defonce toast-counter
   (atom 0))
@@ -589,7 +442,7 @@
 
 (defn curse-player! [player-id]
   (let [state (player-state player-id)
-        curse (->> tuning-sliders
+        curse (->> constants/tuning-sliders
                    (filter mutable-slider?)
                    (filter (fn [slider]
                              (slider-active? state slider)))
@@ -684,7 +537,7 @@
                            (set-gravity-mode! (keyword "gravity" (.. event -target -value))))}
      [:option {:value "linear"} "Linear"]
      [:option {:value "radial"} "Radial"]]]
-   (for [slider tuning-sliders
+   (for [slider constants/tuning-sliders
          :when (slider-active? (player-state :player/one) slider)]
      ^{:key (:slider/key slider)}
      [tuning-slider slider])])
